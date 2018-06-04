@@ -10,15 +10,37 @@ using namespace std;
 #define ROOT 0
 #define START_VERTEX 0
 #define SUPER_BIG_NUM 99999
+long totalTimeInMs;
 
 int procAmount;
 int rank;
 int graphSize;
 
+void updateTime(timeval start, timeval end) {
+    long seconds, useconds, mseconds;
+    
+    seconds = end.tv_sec - start.tv_sec;
+    useconds = end.tv_usec - start.tv_usec;
+
+    mseconds = ((seconds)*4000 + useconds / 4000.0) + 0.5;
+
+    totalTimeInMs += mseconds;
+}
+
 void initData(int *distances, int *prevVertex, int size) {
     for (int i = 0; i < size; i++) {
         distances[i] = SUPER_BIG_NUM;
         prevVertex[i] = -1;
+    }
+}
+
+void printOneDArrayAsMatrix(int *matrix, int rows, int cols) {
+    for (int i = 0; i < rows; i++) {
+        for (int j = 0; j < cols; j++) {
+            int id = i * cols + j;
+            cout << matrix[id] << "  ";
+        }
+        cout << endl;
     }
 }
 
@@ -30,11 +52,30 @@ void printSpanningTree(int *distances, int *prevVertexes) {
     }
 }
 
+int **readAdjacencyMatrix() {
+    ifstream file;
+    file.open("graph_4000_50.0.txt");
+
+    file >> graphSize;
+
+    int **matrix = new int*[graphSize];
+    for (int i = 0; i < graphSize; i++) {
+        matrix[i] = new int[graphSize];
+    }
+
+    for (int i = 0; i < graphSize; i++) {
+        matrix[i] = new int[graphSize];
+        for (int j = 0; j < graphSize; j++) {
+            file >> matrix[i][j];
+        }
+    }
+
+    return matrix;
+}
 
 int *readAdjacencyMatrixForParallel() {
     ifstream file;
-    file.open("text_graph_1.txt");
-    int graphSize;
+    file.open("graph_4000_50.0.txt");
 
     file >> graphSize;
 
@@ -58,6 +99,56 @@ int *readAdjacencyMatrixForParallel() {
     return matrix;
 }
 
+void printMinimalSpanningTree(int **matrix) {
+    int lastAddedVertex = 0;
+    bool *usedVeretex = new bool[graphSize];
+    int *distanceToSpanningTree = new int[graphSize];
+    int *prevVertex = new int[graphSize];
+    struct timeval start, end;
+
+    gettimeofday(&start, NULL);
+    for (int i = 0; i < graphSize; i++) {
+        usedVeretex[i] = false;
+        distanceToSpanningTree[i] = SUPER_BIG_NUM;
+        prevVertex[i] = -1;
+    }
+
+    usedVeretex[lastAddedVertex] = true;
+    distanceToSpanningTree[lastAddedVertex] = START_VERTEX;
+    prevVertex[lastAddedVertex] = START_VERTEX;
+
+    for (int i = 0; i < graphSize - 1; i++) {
+        int minWeight = SUPER_BIG_NUM;
+        int closestNeighbour = lastAddedVertex;
+
+        for (int i = 0; i < graphSize; i++) {
+            if (!usedVeretex[i]) {
+                int weight = matrix[lastAddedVertex][i] != 0 ? matrix[lastAddedVertex][i] : matrix[i][lastAddedVertex];
+
+                if (weight != 0 && weight < distanceToSpanningTree[i]) {
+                    distanceToSpanningTree[i] = weight;
+                    prevVertex[i] = lastAddedVertex;
+                }
+
+                if (distanceToSpanningTree[i] < minWeight) {
+                    minWeight = distanceToSpanningTree[i];
+                    closestNeighbour = i;
+                }
+            }
+        }
+
+        usedVeretex[closestNeighbour] = true;
+
+        lastAddedVertex = closestNeighbour;
+    }
+
+    gettimeofday(&end, NULL);
+
+    updateTime(start, end);
+
+    // printSpanningTree(distanceToSpanningTree, prevVertex);
+}
+
 void mainParallelProcess() {
     int *oneDMatrix;
     int *processMatrix;
@@ -69,12 +160,14 @@ void mainParallelProcess() {
     int *allPrevVertex;
     int workArraySize;
     int *workArray;
-    int graphSize;
+    struct timeval start, end;
 
     if (rank == ROOT) {
         oneDMatrix = readAdjacencyMatrixForParallel();
+        gettimeofday(&start, NULL);
     }
 
+    MPI_Bcast(&graphSize, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
     usedVertex = new int[graphSize + 1];
 
     if (rank == ROOT) {
@@ -89,8 +182,6 @@ void mainParallelProcess() {
         usedVertex[lastAddedVertex] = 1;
         usedVertex[graphSize] = lastAddedVertex;
     }
-
-    MPI_Bcast(&graphSize, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
 
     if (graphSize % procAmount != 0) {
         cout << "Can't spread data to the all process" << endl;
@@ -156,11 +247,13 @@ void mainParallelProcess() {
         }
     }
 
-    MPI_Gather(processDistances, chunkSize, MPI_INT, allDistances, chunkSize, MPI_INT, ROOT, MPI_COMM_WORLD);
-    MPI_Gather(processPrevVertex, chunkSize, MPI_INT, allPrevVertex, chunkSize, MPI_INT, ROOT, MPI_COMM_WORLD);
+    // MPI_Gather(processDistances, chunkSize, MPI_INT, allDistances, chunkSize, MPI_INT, ROOT, MPI_COMM_WORLD);
+    // MPI_Gather(processPrevVertex, chunkSize, MPI_INT, allPrevVertex, chunkSize, MPI_INT, ROOT, MPI_COMM_WORLD);
 
     if (rank == ROOT) {
-        printSpanningTree(allDistances, allPrevVertex);
+        gettimeofday(&end, NULL);
+        updateTime(start, end);
+        // printSpanningTree(allDistances, allPrevVertex);
     }
 }
 
@@ -171,7 +264,17 @@ int main(int argc, char *argv[]) {
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &procAmount);
 
-    mainParallelProcess();
+    if (procAmount == 1) {
+        int **matrix = readAdjacencyMatrix();
+        printMinimalSpanningTree(matrix);
+    } else {
+        mainParallelProcess();
+    }
+
+    if (rank == ROOT) {
+        cout << "Total vertexes: " << graphSize << endl;
+        cout << "Total time in ms is: " << totalTimeInMs << endl;
+    }
 
     MPI_Barrier(MPI_COMM_WORLD);
     MPI_Finalize();
